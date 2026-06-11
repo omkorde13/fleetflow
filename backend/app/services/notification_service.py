@@ -90,6 +90,45 @@ class NotificationService:
         await NotificationService.send_email(email, "Reset your FleetFlow password", html)
 
     @staticmethod
+    async def send_order_placed_email(
+        email: str, name: str, delivery_id: str,
+        pickup_address: str, dropoff_address: str, total_fare: float,
+    ):
+        html = f"""
+        <html><body>
+        <h2>Order Placed Successfully!</h2>
+        <p>Hi {name},</p>
+        <p>We've received your delivery request and are finding a driver for you.</p>
+        <table style="border-collapse:collapse;margin-top:12px;">
+            <tr><td style="padding:4px 16px 4px 0;color:#888;">Order ID</td><td><strong>{delivery_id[:8].upper()}</strong></td></tr>
+            <tr><td style="padding:4px 16px 4px 0;color:#888;">Pickup</td><td>{pickup_address}</td></tr>
+            <tr><td style="padding:4px 16px 4px 0;color:#888;">Dropoff</td><td>{dropoff_address}</td></tr>
+            <tr><td style="padding:4px 16px 4px 0;color:#888;">Total Fare</td><td><strong>₹{total_fare:.2f}</strong></td></tr>
+        </table>
+        <p style="margin-top:16px;">You'll get another email as soon as a driver is assigned.</p>
+        <br>
+        <p>The FleetFlow Team</p>
+        </body></html>
+        """
+        await NotificationService.send_email(email, f"FleetFlow: Order #{delivery_id[:8].upper()} placed", html)
+
+    @staticmethod
+    async def send_daily_report_email(email: str, report: dict):
+        html = f"""
+        <html><body>
+        <h2>FleetFlow Daily Report — {report['date']}</h2>
+        <table style="border-collapse:collapse;">
+            <tr><td style="padding:6px 16px 6px 0;color:#888;">Deliveries Created</td><td><strong>{report['deliveries_created']}</strong></td></tr>
+            <tr><td style="padding:6px 16px 6px 0;color:#888;">Deliveries Completed</td><td><strong>{report['deliveries_completed']}</strong></td></tr>
+            <tr><td style="padding:6px 16px 6px 0;color:#888;">Revenue</td><td><strong>₹{report['revenue']:.2f}</strong></td></tr>
+        </table>
+        <br>
+        <p>The FleetFlow Team</p>
+        </body></html>
+        """
+        await NotificationService.send_email(email, f"FleetFlow Daily Report — {report['date']}", html)
+
+    @staticmethod
     async def send_delivery_update_email(email: str, name: str, status: str, delivery_id: str):
         status_messages = {
             "ASSIGNED": "Your driver has been assigned!",

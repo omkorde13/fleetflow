@@ -135,6 +135,13 @@ async def create_delivery(
         str(delivery.id), str(current_user.id)
     )
 
+    # Background: email order confirmation to the client
+    background_tasks.add_task(
+        NotificationService.send_order_placed_email,
+        current_user.email, current_user.full_name, str(delivery.id),
+        delivery.pickup_address, delivery.dropoff_address, delivery.total_fare,
+    )
+
     logger.info("Delivery created", delivery_id=str(delivery.id), client_id=str(current_user.id))
     return DeliveryResponse.model_validate(delivery)
 

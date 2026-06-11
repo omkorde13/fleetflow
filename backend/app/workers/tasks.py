@@ -128,6 +128,7 @@ def generate_daily_report():
 async def _daily_report():
     from app.db.session import AsyncSessionLocal, engine
     from app.models.models import Delivery, Payment, PaymentStatus, DeliveryStatus, User, UserRole
+    from app.services.notification_service import NotificationService
     from sqlalchemy import select, func
     from datetime import date
 
@@ -162,6 +163,13 @@ async def _daily_report():
         }
 
         logger.info("Daily report generated", **report)
+
+        # Email the report to all admins
+        admins_result = await db.execute(
+            select(User).where(User.role == UserRole.ADMIN, User.is_active == True)
+        )
+        for admin in admins_result.scalars().all():
+            await NotificationService.send_daily_report_email(admin.email, report)
 
     await engine.dispose()
 
