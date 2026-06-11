@@ -9,6 +9,9 @@ Enterprise-grade, real-time delivery management platform built with FastAPI, Rea
 | Feature | Details |
 |---|---|
 | **Real-time GPS tracking** | WebSocket + Redis Pub/Sub fan-out; live Leaflet map for clients |
+| **OTP pickup & delivery verification** | Auto-generated 4-digit codes; client shares with driver to confirm pickup and final delivery |
+| **Driver ratings** | Clients rate drivers (1-5★ + comment) after delivery; driver's average rating updates live |
+| **Cash on Delivery** | Pay-on-delivery option with driver-side cash confirmation |
 | **Dynamic pricing** | Distance × weather × surge multipliers via OpenWeatherMap |
 | **Razorpay payments** | Checkout, HMAC signature verification, webhook handler, refunds |
 | **Google OAuth** | Social login with role-aware redirect |
@@ -155,8 +158,9 @@ Base URL: `http://localhost/api/v1`
 | GET | `/deliveries/{id}` | All | Get detail |
 | POST | `/deliveries/{id}/cancel` | CLIENT | Cancel |
 | POST | `/deliveries/{id}/accept` | DRIVER | Accept pending delivery |
-| POST | `/deliveries/{id}/pickup` | DRIVER | Mark picked up |
-| POST | `/deliveries/{id}/complete` | DRIVER | Mark delivered |
+| POST | `/deliveries/{id}/pickup` | DRIVER | Mark picked up (requires pickup OTP from client) |
+| POST | `/deliveries/{id}/complete` | DRIVER | Mark delivered (requires delivery OTP from client) |
+| POST | `/deliveries/{id}/rate` | CLIENT | Rate driver (1-5★ + optional comment) after delivery |
 | POST | `/deliveries/{id}/assign` | ADMIN | Force-assign driver |
 
 ### Pricing
@@ -168,6 +172,9 @@ Base URL: `http://localhost/api/v1`
 | Method | Endpoint | Auth | Description |
 |---|---|---|---|
 | POST | `/payments/orders` | CLIENT | Create Razorpay order |
+| POST | `/payments/cod` | CLIENT | Pay with cash on delivery |
+| POST | `/payments/{id}/confirm-cash` | DRIVER | Confirm cash received from client |
+| GET | `/payments/by-delivery/{delivery_id}` | All | Get payment for a delivery |
 | POST | `/payments/verify` | CLIENT | Verify payment signature |
 | GET | `/payments/history` | CLIENT | Payment history |
 | POST | `/payments/webhook` | — | Razorpay webhook |
