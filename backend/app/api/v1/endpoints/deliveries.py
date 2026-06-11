@@ -4,18 +4,20 @@ from sqlalchemy import select, func, and_, or_
 from sqlalchemy.orm import selectinload
 from typing import Optional, List
 from datetime import datetime
+import secrets
 import structlog
 
 from app.db.session import get_db
 from app.models.models import (
     Delivery, DeliveryStatus, Driver, DriverStatus,
-    User, UserRole, Payment, PaymentStatus, Offer, OfferUsage
+    User, UserRole, Payment, PaymentStatus, Offer, OfferUsage, DriverRating
 )
 from app.core.security import get_current_user, get_current_admin, get_current_active_client
 from app.core.redis import get_redis, PubSubManager
 from app.schemas.delivery import (
     CreateDeliveryRequest, DeliveryResponse, DeliveryListResponse,
-    AssignDriverRequest, UpdateDeliveryStatusRequest, CancelDeliveryRequest
+    AssignDriverRequest, UpdateDeliveryStatusRequest, CancelDeliveryRequest, RateDeliveryRequest,
+    ConfirmPickupRequest, CompleteDeliveryRequest
 )
 from app.services.pricing_service import PricingService
 from app.services.notification_service import NotificationService
@@ -23,6 +25,16 @@ from app.workers.tasks import send_delivery_notification_task
 
 logger = structlog.get_logger()
 router = APIRouter(prefix="/deliveries", tags=["Deliveries"])
+
+
+def _to_delivery_response(delivery: Delivery, role: UserRole) -> DeliveryResponse:
+    """Serialize a delivery, hiding OTPs from anyone but the client (drivers
+    must obtain them verbally to verify pickup/delivery)."""
+    response = DeliveryResponse.model_validate(delivery)
+    if role != UserRole.CLIENT:
+        response.pickup_otp = None
+        response.delivery_otp = None
+    return response
 
 
 @router.post("", response_model=DeliveryResponse, status_code=201)
@@ -86,10 +98,18 @@ async def create_delivery(
         coupon_code=payload.coupon_code,
         offer_id=offer.id if offer else None,
         status=DeliveryStatus.PENDING,
+        pickup_otp=f"{secrets.randbelow(10000):04d}",
+        delivery_otp=f"{secrets.randbelow(10000):04d}",
     )
     db.add(delivery)
     await db.flush()
     await db.refresh(delivery)
+
+    # New delivery has no driver/payment/rating yet — set explicitly to
+    # avoid lazy-loading these relationships in an async context
+    delivery.driver = None
+    delivery.payment = None
+    delivery.rating = None
 
     # Track coupon usage
     if offer:
@@ -128,8 +148,9 @@ async def list_deliveries(
     db: AsyncSession = Depends(get_db),
 ):
     query = select(Delivery).options(
-        selectinload(Delivery.driver),
+        selectinload(Delivery.driver).selectinload(Driver.user),
         selectinload(Delivery.payment),
+        selectinload(Delivery.rating),
     )
 
     # Filter based on role
@@ -163,7 +184,7 @@ async def list_deliveries(
     deliveries = result.scalars().all()
 
     return DeliveryListResponse(
-        deliveries=[DeliveryResponse.model_validate(d) for d in deliveries],
+        deliveries=[_to_delivery_response(d, current_user.role) for d in deliveries],
         total=total,
         page=page,
         page_size=page_size,
@@ -178,7 +199,11 @@ async def get_delivery(
 ):
     result = await db.execute(
         select(Delivery)
-        .options(selectinload(Delivery.driver), selectinload(Delivery.payment))
+        .options(
+            selectinload(Delivery.driver).selectinload(Driver.user),
+            selectinload(Delivery.payment),
+            selectinload(Delivery.rating),
+        )
         .where(Delivery.id == delivery_id)
     )
     delivery = result.scalar_one_or_none()
@@ -189,7 +214,7 @@ async def get_delivery(
     if current_user.role == UserRole.CLIENT and str(delivery.client_id) != str(current_user.id):
         raise HTTPException(status_code=403, detail="Access denied")
 
-    return DeliveryResponse.model_validate(delivery)
+    return _to_delivery_response(delivery, current_user.role)
 
 
 @router.post("/{delivery_id}/cancel")
@@ -221,7 +246,7 @@ async def cancel_delivery(
             select(Driver).where(Driver.id == delivery.driver_id)
         )
         driver = driver_result.scalar_one_or_none()
-        if driver and driver.status == DriverStatus.ON_DELIVERY:
+        if driver and driver.status in [DriverStatus.BUSY, DriverStatus.ON_DELIVERY]:
             driver.status = DriverStatus.ONLINE
 
     pubsub = PubSubManager(redis)
@@ -273,11 +298,12 @@ async def accept_delivery(
 @router.post("/{delivery_id}/pickup")
 async def confirm_pickup(
     delivery_id: str,
+    payload: ConfirmPickupRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     redis=Depends(get_redis),
 ):
-    """Driver confirms pickup."""
+    """Driver confirms pickup using the OTP shared by the client."""
     driver_result = await db.execute(
         select(Driver).where(Driver.user_id == current_user.id)
     )
@@ -292,6 +318,9 @@ async def confirm_pickup(
     if delivery.status != DeliveryStatus.ASSIGNED:
         raise HTTPException(status_code=400, detail=f"Invalid status transition from {delivery.status}")
 
+    if payload.otp != delivery.pickup_otp:
+        raise HTTPException(status_code=400, detail="Invalid pickup OTP")
+
     delivery.status = DeliveryStatus.PICKED_UP
     delivery.picked_up_at = datetime.utcnow()
     driver.status = DriverStatus.ON_DELIVERY
@@ -305,11 +334,12 @@ async def confirm_pickup(
 @router.post("/{delivery_id}/complete")
 async def complete_delivery(
     delivery_id: str,
+    payload: CompleteDeliveryRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     redis=Depends(get_redis),
 ):
-    """Driver marks delivery as complete."""
+    """Driver marks delivery as complete using the OTP shared by the customer."""
     driver_result = await db.execute(
         select(Driver).where(Driver.user_id == current_user.id)
     )
@@ -323,6 +353,9 @@ async def complete_delivery(
 
     if delivery.status not in [DeliveryStatus.PICKED_UP, DeliveryStatus.IN_TRANSIT]:
         raise HTTPException(status_code=400, detail=f"Cannot complete from status {delivery.status}")
+
+    if payload.otp != delivery.delivery_otp:
+        raise HTTPException(status_code=400, detail="Invalid delivery OTP")
 
     delivery.status = DeliveryStatus.DELIVERED
     delivery.delivered_at = datetime.utcnow()
@@ -339,6 +372,59 @@ async def complete_delivery(
     )
 
     return {"message": "Delivery completed"}
+
+
+@router.post("/{delivery_id}/rate")
+async def rate_delivery(
+    delivery_id: str,
+    payload: RateDeliveryRequest,
+    current_user: User = Depends(get_current_active_client),
+    db: AsyncSession = Depends(get_db),
+):
+    """Client rates the driver for a completed delivery."""
+    result = await db.execute(select(Delivery).where(Delivery.id == delivery_id))
+    delivery = result.scalar_one_or_none()
+    if not delivery:
+        raise HTTPException(status_code=404, detail="Delivery not found")
+
+    if str(delivery.client_id) != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if delivery.status != DeliveryStatus.DELIVERED:
+        raise HTTPException(status_code=400, detail="Can only rate completed deliveries")
+
+    if not delivery.driver_id:
+        raise HTTPException(status_code=400, detail="Delivery has no assigned driver")
+
+    existing = await db.execute(
+        select(DriverRating).where(DriverRating.delivery_id == delivery.id)
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="Delivery already rated")
+
+    rating = DriverRating(
+        driver_id=delivery.driver_id,
+        client_id=current_user.id,
+        delivery_id=delivery.id,
+        rating=payload.rating,
+        comment=payload.comment,
+    )
+    db.add(rating)
+    await db.flush()
+
+    avg_result = await db.execute(
+        select(func.avg(DriverRating.rating)).where(DriverRating.driver_id == delivery.driver_id)
+    )
+    avg_rating = avg_result.scalar()
+
+    driver_result = await db.execute(select(Driver).where(Driver.id == delivery.driver_id))
+    driver = driver_result.scalar_one_or_none()
+    if driver and avg_rating is not None:
+        driver.rating = round(float(avg_rating), 2)
+
+    logger.info("Driver rated", delivery_id=delivery_id, driver_id=str(delivery.driver_id), rating=payload.rating)
+
+    return {"message": "Rating submitted successfully"}
 
 
 @router.post("/{delivery_id}/assign", dependencies=[Depends(get_current_admin)])

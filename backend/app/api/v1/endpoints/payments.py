@@ -2,6 +2,7 @@ import razorpay
 import hmac
 import hashlib
 import json
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -9,8 +10,8 @@ from datetime import datetime
 import structlog
 
 from app.db.session import get_db
-from app.models.models import Payment, PaymentStatus, Delivery, DeliveryStatus, User
-from app.core.security import get_current_user, get_current_admin
+from app.models.models import Payment, PaymentStatus, Delivery, DeliveryStatus, Driver, User, UserRole
+from app.core.security import get_current_user, get_current_driver, get_current_admin
 from app.core.config import settings
 from app.core.redis import get_redis, PubSubManager
 from app.schemas.payment import (
@@ -98,6 +99,152 @@ async def create_payment_order(
         key=settings.RAZORPAY_KEY_ID,
         delivery_id=delivery.id,
     )
+
+
+@router.post("/cod")
+async def pay_cash_on_delivery(
+    payload: CreateOrderRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    redis=Depends(get_redis),
+):
+    """Mark a completed delivery as cash-on-delivery, pending the driver's confirmation."""
+    result = await db.execute(
+        select(Delivery).where(Delivery.id == payload.delivery_id)
+    )
+    delivery = result.scalar_one_or_none()
+
+    if not delivery:
+        raise HTTPException(status_code=404, detail="Delivery not found")
+
+    if str(delivery.client_id) != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if delivery.status != DeliveryStatus.DELIVERED:
+        raise HTTPException(status_code=400, detail="Delivery must be completed before payment")
+
+    existing_payment = await db.execute(
+        select(Payment).where(Payment.delivery_id == delivery.id)
+    )
+    if existing_payment.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="Payment already initiated for this delivery")
+
+    payment = Payment(
+        delivery_id=delivery.id,
+        user_id=current_user.id,
+        amount=delivery.total_fare,
+        currency="INR",
+        status=PaymentStatus.PENDING,
+        payment_method="CASH",
+    )
+    db.add(payment)
+    await db.flush()
+
+    pubsub = PubSubManager(redis)
+    await pubsub.publish_notification(
+        str(current_user.id),
+        {
+            "title": "Cash Payment Pending",
+            "message": f"Your cash payment of ₹{payment.amount:.2f} is pending confirmation from the driver.",
+            "event_type": "PAYMENT_PENDING",
+        }
+    )
+
+    if delivery.driver_id:
+        driver_result = await db.execute(select(Driver.user_id).where(Driver.id == delivery.driver_id))
+        driver_user_id = driver_result.scalar_one_or_none()
+        if driver_user_id:
+            await pubsub.publish_notification(
+                str(driver_user_id),
+                {
+                    "title": "Confirm Cash Received",
+                    "message": f"Customer marked ₹{payment.amount:.2f} as paid in cash for delivery #{str(delivery.id)[:8].upper()}. Please confirm once received.",
+                    "event_type": "CASH_PAYMENT_PENDING",
+                    "delivery_id": str(delivery.id),
+                    "payment_id": str(payment.id),
+                }
+            )
+
+    logger.info("Cash payment pending driver confirmation", payment_id=str(payment.id), delivery_id=str(delivery.id))
+
+    return {"message": "Cash payment recorded, pending driver confirmation", "payment_id": str(payment.id)}
+
+
+@router.post("/{payment_id}/confirm-cash")
+async def confirm_cash_payment(
+    payment_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_driver),
+    db: AsyncSession = Depends(get_db),
+    redis=Depends(get_redis),
+):
+    """Driver confirms they received the cash payment from the customer."""
+    driver_result = await db.execute(select(Driver).where(Driver.user_id == current_user.id))
+    driver = driver_result.scalar_one_or_none()
+
+    result = await db.execute(select(Payment).where(Payment.id == payment_id))
+    payment = result.scalar_one_or_none()
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment not found")
+
+    if payment.payment_method != "CASH" or payment.status != PaymentStatus.PENDING:
+        raise HTTPException(status_code=400, detail="No pending cash payment to confirm")
+
+    delivery_result = await db.execute(select(Delivery).where(Delivery.id == payment.delivery_id))
+    delivery = delivery_result.scalar_one_or_none()
+
+    if not driver or not delivery or str(delivery.driver_id) != str(driver.id):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    payment.status = PaymentStatus.SUCCESS
+
+    pubsub = PubSubManager(redis)
+    await pubsub.publish_notification(
+        str(payment.user_id),
+        {
+            "title": "Payment Confirmed",
+            "message": f"The driver confirmed receipt of your ₹{payment.amount:.2f} cash payment.",
+            "event_type": "PAYMENT_SUCCESS",
+        }
+    )
+
+    background_tasks.add_task(
+        generate_invoice_task.delay,
+        str(payment.id)
+    )
+
+    logger.info("Cash payment confirmed by driver", payment_id=str(payment.id), driver_id=str(driver.id))
+
+    return {"message": "Cash payment confirmed", "payment_id": str(payment.id)}
+
+
+@router.get("/by-delivery/{delivery_id}", response_model=Optional[PaymentResponse])
+async def get_payment_by_delivery(
+    delivery_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get the payment record for a delivery, if one exists."""
+    delivery_result = await db.execute(select(Delivery).where(Delivery.id == delivery_id))
+    delivery = delivery_result.scalar_one_or_none()
+    if not delivery:
+        raise HTTPException(status_code=404, detail="Delivery not found")
+
+    is_client = str(delivery.client_id) == str(current_user.id)
+    is_admin = current_user.role == UserRole.ADMIN
+    is_driver = False
+
+    if current_user.role == UserRole.DRIVER and delivery.driver_id:
+        driver_result = await db.execute(select(Driver).where(Driver.user_id == current_user.id))
+        driver = driver_result.scalar_one_or_none()
+        is_driver = driver is not None and str(delivery.driver_id) == str(driver.id)
+
+    if not (is_client or is_driver or is_admin):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    result = await db.execute(select(Payment).where(Payment.delivery_id == delivery_id))
+    payment = result.scalar_one_or_none()
+    return PaymentResponse.model_validate(payment) if payment else None
 
 
 @router.post("/verify")

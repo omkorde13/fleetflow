@@ -1,2 +1,2 @@
-from app.schemas import CreateDeliveryRequest, DeliveryResponse, DeliveryListResponse, AssignDriverRequest, UpdateDeliveryStatusRequest, CancelDeliveryRequest, FareEstimateRequest, FareEstimateResponse
-__all__ = ["CreateDeliveryRequest", "DeliveryResponse", "DeliveryListResponse", "AssignDriverRequest", "UpdateDeliveryStatusRequest", "CancelDeliveryRequest", "FareEstimateRequest", "FareEstimateResponse"]
+from app.schemas import CreateDeliveryRequest, DeliveryResponse, DeliveryListResponse, AssignDriverRequest, UpdateDeliveryStatusRequest, CancelDeliveryRequest, FareEstimateRequest, FareEstimateResponse, RateDeliveryRequest, ConfirmPickupRequest, CompleteDeliveryRequest
+__all__ = ["CreateDeliveryRequest", "DeliveryResponse", "DeliveryListResponse", "AssignDriverRequest", "UpdateDeliveryStatusRequest", "CancelDeliveryRequest", "FareEstimateRequest", "FareEstimateResponse", "RateDeliveryRequest", "ConfirmPickupRequest", "CompleteDeliveryRequest"]

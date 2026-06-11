@@ -66,16 +66,24 @@ export const deliveryApi = {
   get: (id: string) => api.get(`/deliveries/${id}`),
   cancel: (id: string, reason: string) => api.post(`/deliveries/${id}/cancel`, { reason }),
   accept: (id: string) => api.post(`/deliveries/${id}/accept`),
-  pickup: (id: string) => api.post(`/deliveries/${id}/pickup`),
-  complete: (id: string) => api.post(`/deliveries/${id}/complete`),
+  pickup: (id: string, otp: string) => api.post(`/deliveries/${id}/pickup`, { otp }),
+  complete: (id: string, otp: string) => api.post(`/deliveries/${id}/complete`, { otp }),
   estimateFare: (data: any) => api.post('/users/pricing/estimate', data),
   assign: (id: string, driverId: string) =>
     api.post(`/deliveries/${id}/assign`, { driver_id: driverId }),
+  rate: (id: string, rating: number, comment?: string) =>
+    api.post(`/deliveries/${id}/rate`, { rating, comment }),
 }
 
 export const paymentApi = {
   createOrder: (deliveryId: string) =>
     api.post('/payments/orders', { delivery_id: deliveryId }),
+  payCash: (deliveryId: string) =>
+    api.post('/payments/cod', { delivery_id: deliveryId }),
+  confirmCash: (paymentId: string) =>
+    api.post(`/payments/${paymentId}/confirm-cash`),
+  getByDelivery: (deliveryId: string) =>
+    api.get(`/payments/by-delivery/${deliveryId}`),
   verify: (data: any) => api.post('/payments/verify', data),
   history: () => api.get('/payments/history'),
   refund: (paymentId: string) => api.post(`/payments/${paymentId}/refund`),

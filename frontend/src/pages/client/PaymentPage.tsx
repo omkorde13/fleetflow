@@ -5,21 +5,22 @@ import RazorpayButton from '../../components/payment/RazorpayButton';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import StatusBadge from '../../components/delivery/StatusBadge';
 import FareBreakdown from '../../components/delivery/FareBreakdown';
-import { CheckCircle, Receipt } from 'lucide-react';
+import { CheckCircle, Receipt, Banknote, Loader2, Clock } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 export default function PaymentPage() {
-  const { id } = useParams<{ id: string }>();
+  const { deliveryId } = useParams<{ deliveryId: string }>();
   const navigate = useNavigate();
   const [delivery, setDelivery] = useState<any>(null);
   const [payment, setPayment] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [paid, setPaid] = useState(false);
+  const [codLoading, setCodLoading] = useState(false);
 
   useEffect(() => {
     Promise.all([
-      deliveryApi.get(id!),
-      paymentApi.history().then((r) => r.data.find((p: any) => p.delivery_id === id)),
+      deliveryApi.get(deliveryId!),
+      paymentApi.getByDelivery(deliveryId!).then((r) => r.data),
     ]).then(([dRes, pay]) => {
       setDelivery(dRes.data);
       if (pay) {
@@ -27,18 +28,68 @@ export default function PaymentPage() {
         if (pay.status === 'SUCCESS') setPaid(true);
       }
     }).finally(() => setLoading(false));
-  }, [id]);
+  }, [deliveryId]);
+
+  // Poll for driver confirmation while a cash payment is pending
+  useEffect(() => {
+    if (!deliveryId || !payment || payment.payment_method !== 'CASH' || payment.status !== 'PENDING') return;
+
+    const interval = setInterval(() => {
+      paymentApi.getByDelivery(deliveryId).then((r) => {
+        if (r.data) {
+          setPayment(r.data);
+          if (r.data.status === 'SUCCESS') setPaid(true);
+        }
+      });
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [deliveryId, payment]);
 
   if (loading) return <div className="flex justify-center py-20"><LoadingSpinner /></div>;
   if (!delivery) return <p className="text-center text-gray-500">Delivery not found</p>;
+
+  const handleCashPayment = async () => {
+    setCodLoading(true);
+    try {
+      await paymentApi.payCash(delivery.id);
+      toast.success('Marked as cash payment. Waiting for driver to confirm.');
+      const { data } = await paymentApi.getByDelivery(delivery.id);
+      setPayment(data);
+    } catch (err: any) {
+      toast.error(err?.response?.data?.detail || 'Failed to record cash payment');
+    } finally {
+      setCodLoading(false);
+    }
+  };
 
   if (paid) {
     return (
       <div className="max-w-md mx-auto text-center py-16">
         <CheckCircle className="w-16 h-16 text-green-500 mx-auto mb-4" />
         <h2 className="text-2xl font-bold text-gray-800 mb-2">Payment Successful</h2>
-        <p className="text-gray-500 mb-6">Payment ID: {payment?.razorpay_payment_id}</p>
+        <p className="text-gray-500 mb-6">
+          {payment?.payment_method === 'CASH'
+            ? 'Paid via Cash on Delivery'
+            : `Payment ID: ${payment?.razorpay_payment_id ?? ''}`}
+        </p>
         <button onClick={() => navigate('/deliveries')} className="btn-primary">
+          View Deliveries
+        </button>
+      </div>
+    );
+  }
+
+  if (payment?.payment_method === 'CASH' && payment?.status === 'PENDING') {
+    return (
+      <div className="max-w-md mx-auto text-center py-16">
+        <Clock className="w-16 h-16 text-amber-500 mx-auto mb-4" />
+        <h2 className="text-2xl font-bold text-gray-800 mb-2">Waiting for Driver Confirmation</h2>
+        <p className="text-gray-500 mb-6">
+          You marked ₹{(delivery.total_fare ?? 0).toFixed(0)} as paid in cash. This page will
+          update automatically once the driver confirms they received the payment.
+        </p>
+        <button onClick={() => navigate('/deliveries')} className="btn-secondary">
           View Deliveries
         </button>
       </div>
@@ -82,6 +133,27 @@ export default function PaymentPage() {
           amount={delivery.total_fare ?? 0}
           onSuccess={() => { setPaid(true); }}
         />
+      </div>
+
+      <div className="flex items-center gap-3">
+        <div className="flex-1 h-px bg-gray-200" />
+        <span className="text-xs text-gray-400 uppercase">or</span>
+        <div className="flex-1 h-px bg-gray-200" />
+      </div>
+
+      <div className="card">
+        <p className="text-sm text-gray-500 mb-4 flex items-center gap-2">
+          <Banknote className="w-4 h-4" />
+          Pay the driver in cash on delivery
+        </p>
+        <button
+          onClick={handleCashPayment}
+          disabled={codLoading}
+          className="btn-secondary w-full flex items-center justify-center gap-2"
+        >
+          {codLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Banknote className="w-4 h-4" />}
+          {codLoading ? 'Processing...' : `Cash on Delivery (₹${(delivery.total_fare ?? 0).toFixed(0)})`}
+        </button>
       </div>
     </div>
   );

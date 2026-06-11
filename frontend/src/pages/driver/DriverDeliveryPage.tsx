@@ -2,11 +2,11 @@ import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { MapContainer, TileLayer, Marker, Popup, Polyline } from 'react-leaflet';
 import L from 'leaflet';
-import { deliveryApi } from '../../services/api';
+import { deliveryApi, paymentApi } from '../../services/api';
 import { useDriverLocationSender } from '../../hooks/useWebSocket';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import StatusBadge from '../../components/delivery/StatusBadge';
-import { Navigation, Package, CheckCircle, Loader2, MapPin } from 'lucide-react';
+import { Navigation, Package, CheckCircle, Loader2, MapPin, Banknote } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 const pickupIcon = new L.Icon({
@@ -22,8 +22,12 @@ export default function DriverDeliveryPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [delivery, setDelivery] = useState<any>(null);
+  const [payment, setPayment] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [pickupOtp, setPickupOtp] = useState('');
+  const [deliveryOtp, setDeliveryOtp] = useState('');
 
   // Start GPS streaming for this delivery (uses the Driver profile id, which
   // is what Delivery.driver_id and the /ws/driver/{driver_id} endpoint key off)
@@ -33,11 +37,24 @@ export default function DriverDeliveryPage() {
     deliveryApi.get(id!).then(({ data }) => setDelivery(data)).finally(() => setLoading(false));
   }, [id]);
 
+  // Once delivered, watch for a pending cash payment that needs confirmation
+  useEffect(() => {
+    if (delivery?.status !== 'DELIVERED') return;
+
+    const fetchPayment = () => {
+      paymentApi.getByDelivery(id!).then(({ data }) => setPayment(data));
+    };
+
+    fetchPayment();
+    const interval = setInterval(fetchPayment, 5000);
+    return () => clearInterval(interval);
+  }, [id, delivery?.status]);
+
   const doAction = async (action: 'pickup' | 'complete') => {
     setActing(true);
     try {
-      if (action === 'pickup') await deliveryApi.pickup(id!);
-      else await deliveryApi.complete(id!);
+      if (action === 'pickup') await deliveryApi.pickup(id!, pickupOtp);
+      else await deliveryApi.complete(id!, deliveryOtp);
       const { data } = await deliveryApi.get(id!);
       setDelivery(data);
       toast.success(action === 'pickup' ? 'Picked up successfully!' : 'Delivery completed! 🎉');
@@ -46,6 +63,20 @@ export default function DriverDeliveryPage() {
       toast.error(err.response?.data?.detail ?? 'Action failed');
     } finally {
       setActing(false);
+    }
+  };
+
+  const handleConfirmCash = async () => {
+    if (!payment) return;
+    setConfirming(true);
+    try {
+      await paymentApi.confirmCash(payment.id);
+      toast.success('Cash payment confirmed!');
+      setPayment({ ...payment, status: 'SUCCESS' });
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail ?? 'Failed to confirm payment');
+    } finally {
+      setConfirming(false);
     }
   };
 
@@ -122,18 +153,42 @@ export default function DriverDeliveryPage() {
       {!isDelivered && (
         <div className="space-y-2">
           {canPickup && (
-            <button onClick={() => doAction('pickup')} disabled={acting}
-              className="btn-primary w-full flex items-center justify-center gap-2">
-              {acting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Navigation className="w-4 h-4" />}
-              {acting ? 'Updating...' : 'Mark as Picked Up'}
-            </button>
+            <div className="card space-y-2">
+              <p className="text-sm font-medium text-gray-700">Ask the customer for their pickup OTP</p>
+              <input
+                type="text"
+                inputMode="numeric"
+                maxLength={4}
+                value={pickupOtp}
+                onChange={(e) => setPickupOtp(e.target.value.replace(/\D/g, ''))}
+                placeholder="Enter 4-digit OTP"
+                className="input-field w-full text-center text-lg tracking-[0.5em]"
+              />
+              <button onClick={() => doAction('pickup')} disabled={acting || pickupOtp.length !== 4}
+                className="btn-primary w-full flex items-center justify-center gap-2 disabled:opacity-50">
+                {acting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Navigation className="w-4 h-4" />}
+                {acting ? 'Updating...' : 'Mark as Picked Up'}
+              </button>
+            </div>
           )}
           {canComplete && (
-            <button onClick={() => doAction('complete')} disabled={acting}
-              className="bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-lg transition-colors w-full flex items-center justify-center gap-2 disabled:opacity-50">
-              {acting ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
-              {acting ? 'Completing...' : 'Mark as Delivered'}
-            </button>
+            <div className="card space-y-2">
+              <p className="text-sm font-medium text-gray-700">Ask the customer for their delivery OTP</p>
+              <input
+                type="text"
+                inputMode="numeric"
+                maxLength={4}
+                value={deliveryOtp}
+                onChange={(e) => setDeliveryOtp(e.target.value.replace(/\D/g, ''))}
+                placeholder="Enter 4-digit OTP"
+                className="input-field w-full text-center text-lg tracking-[0.5em]"
+              />
+              <button onClick={() => doAction('complete')} disabled={acting || deliveryOtp.length !== 4}
+                className="bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-lg transition-colors w-full flex items-center justify-center gap-2 disabled:opacity-50">
+                {acting ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
+                {acting ? 'Completing...' : 'Mark as Delivered'}
+              </button>
+            </div>
           )}
         </div>
       )}
@@ -142,6 +197,31 @@ export default function DriverDeliveryPage() {
         <div className="card text-center py-6">
           <CheckCircle className="w-12 h-12 text-green-500 mx-auto mb-2" />
           <p className="font-semibold text-gray-800">Delivery Completed!</p>
+
+          {payment?.payment_method === 'CASH' && payment?.status === 'PENDING' && (
+            <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-lg text-left">
+              <p className="text-sm text-amber-800 mb-3 flex items-center gap-2">
+                <Banknote className="w-4 h-4" />
+                Customer marked ₹{payment.amount?.toFixed(0)} as paid in cash. Confirm once you've received it.
+              </p>
+              <button
+                onClick={handleConfirmCash}
+                disabled={confirming}
+                className="bg-amber-600 hover:bg-amber-700 text-white font-medium py-2 px-4 rounded-lg transition-colors w-full flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                {confirming ? <Loader2 className="w-4 h-4 animate-spin" /> : <Banknote className="w-4 h-4" />}
+                {confirming ? 'Confirming...' : `Confirm Cash Received (₹${payment.amount?.toFixed(0)})`}
+              </button>
+            </div>
+          )}
+
+          {payment?.payment_method === 'CASH' && payment?.status === 'SUCCESS' && (
+            <p className="mt-4 text-sm text-green-600 flex items-center justify-center gap-2">
+              <CheckCircle className="w-4 h-4" />
+              Cash payment confirmed
+            </p>
+          )}
+
           <button onClick={() => navigate('/driver/dashboard')} className="btn-secondary mt-4">
             Back to Dashboard
           </button>

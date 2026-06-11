@@ -1,11 +1,14 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { deliveryApi, driverApi } from '../../services/api';
-import { MapPin, Package, CheckCircle, XCircle, ToggleLeft, ToggleRight, Loader2 } from 'lucide-react';
+import { MapPin, Package, CheckCircle, XCircle, ToggleLeft, ToggleRight, Loader2, Banknote, Navigation } from 'lucide-react';
 import LoadingSpinner from '../../components/common/LoadingSpinner';
 import EmptyState from '../../components/common/EmptyState';
+import StatusBadge from '../../components/delivery/StatusBadge';
 import { useAuthStore } from '../../context/authStore';
 import toast from 'react-hot-toast';
+
+const ACTIVE_STATUSES = ['ASSIGNED', 'PICKED_UP', 'IN_TRANSIT'];
 
 const STATUS_LABELS: Record<string, string> = {
   ONLINE: 'Online', OFFLINE: 'Offline', BUSY: 'Busy', ON_DELIVERY: 'On Delivery',
@@ -15,6 +18,8 @@ export default function DriverDashboard() {
   const { user } = useAuthStore();
   const navigate = useNavigate();
   const [pending, setPending] = useState<any[]>([]);
+  const [activeDelivery, setActiveDelivery] = useState<any>(null);
+  const [cashPending, setCashPending] = useState<any[]>([]);
   const [profile, setProfile] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [toggling, setToggling] = useState(false);
@@ -22,12 +27,26 @@ export default function DriverDashboard() {
 
   const fetchData = async () => {
     try {
-      const [profileRes, deliveriesRes] = await Promise.all([
+      const [profileRes, deliveriesRes, myDeliveriesRes] = await Promise.all([
         driverApi.getProfile(),
-        deliveryApi.list({ status: 'PENDING', limit: 20 }),
+        deliveryApi.list({ status: 'PENDING', page_size: 20 }),
+        deliveryApi.list({ page_size: 20 }),
       ]);
       setProfile(profileRes.data);
       setPending(deliveriesRes.data.deliveries);
+
+      const myDeliveries = myDeliveriesRes.data.deliveries;
+      setActiveDelivery(
+        myDeliveries.find((d: any) => ACTIVE_STATUSES.includes(d.status)) ?? null
+      );
+      setCashPending(
+        myDeliveries.filter(
+          (d: any) =>
+            d.status === 'DELIVERED' &&
+            d.payment?.payment_method === 'CASH' &&
+            d.payment?.status === 'PENDING'
+        )
+      );
     } finally {
       setLoading(false);
     }
@@ -102,6 +121,63 @@ export default function DriverDashboard() {
           <p className="text-xs text-gray-500 mt-1">Avg Rating ⭐</p>
         </div>
       </div>
+
+      {/* Active delivery in progress */}
+      {activeDelivery && (
+        <div>
+          <h3 className="text-lg font-semibold text-gray-800 mb-3">Active Delivery</h3>
+          <button
+            onClick={() => navigate(`/driver/delivery/${activeDelivery.id}`)}
+            className="card w-full text-left hover:border-blue-300 transition-colors space-y-3"
+          >
+            <div className="flex justify-between items-start">
+              <span className="text-xs font-mono text-gray-400">#{activeDelivery.id.slice(0, 8).toUpperCase()}</span>
+              <StatusBadge status={activeDelivery.status} />
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-start gap-2">
+                <MapPin className="w-4 h-4 text-green-500 mt-0.5 shrink-0" />
+                <span className="text-sm text-gray-700 line-clamp-1">{activeDelivery.pickup_address}</span>
+              </div>
+              <div className="flex items-start gap-2">
+                <MapPin className="w-4 h-4 text-red-500 mt-0.5 shrink-0" />
+                <span className="text-sm text-gray-700 line-clamp-1">{activeDelivery.dropoff_address}</span>
+              </div>
+            </div>
+            <div className="flex items-center justify-center gap-2 text-blue-600 font-medium text-sm pt-1">
+              <Navigation className="w-4 h-4" />
+              Continue Delivery
+            </div>
+          </button>
+        </div>
+      )}
+
+      {/* Cash payments awaiting confirmation */}
+      {cashPending.length > 0 && (
+        <div>
+          <h3 className="text-lg font-semibold text-gray-800 mb-3">
+            Cash Payments to Confirm ({cashPending.length})
+          </h3>
+          <div className="space-y-3">
+            {cashPending.map((d) => (
+              <button
+                key={d.id}
+                onClick={() => navigate(`/driver/delivery/${d.id}`)}
+                className="card w-full text-left hover:border-amber-300 transition-colors flex items-center justify-between"
+              >
+                <div className="flex items-center gap-3">
+                  <Banknote className="w-5 h-5 text-amber-500 shrink-0" />
+                  <div>
+                    <p className="text-xs font-mono text-gray-400">#{d.id.slice(0, 8).toUpperCase()}</p>
+                    <p className="text-sm text-gray-700 line-clamp-1">{d.dropoff_address}</p>
+                  </div>
+                </div>
+                <span className="font-bold text-gray-900">₹{d.payment.amount.toFixed(0)}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Pending orders */}
       <div>

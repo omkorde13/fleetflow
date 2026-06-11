@@ -110,6 +110,18 @@ class DriverResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class DriverInfo(BaseModel):
+    id: UUID
+    full_name: Optional[str]
+    phone: Optional[str]
+    vehicle_type: str
+    vehicle_number: str
+    vehicle_model: Optional[str]
+    rating: float
+
+    model_config = {"from_attributes": True}
+
+
 # ──────────────────────────────────────────────────────────
 # Delivery Schemas
 # ──────────────────────────────────────────────────────────
@@ -129,6 +141,28 @@ class CreateDeliveryRequest(BaseModel):
     parcel_weight: Optional[float] = None
     special_instructions: Optional[str] = None
     coupon_code: Optional[str] = None
+
+
+class PaymentResponse(BaseModel):
+    id: UUID
+    delivery_id: UUID
+    amount: float
+    currency: str
+    status: PaymentStatus
+    razorpay_order_id: Optional[str]
+    razorpay_payment_id: Optional[str]
+    payment_method: Optional[str]
+    invoice_url: Optional[str]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class DriverRatingResponse(BaseModel):
+    rating: float
+    comment: Optional[str] = None
+
+    model_config = {"from_attributes": True}
 
 
 class DeliveryResponse(BaseModel):
@@ -155,6 +189,11 @@ class DeliveryResponse(BaseModel):
     picked_up_at: Optional[datetime]
     delivered_at: Optional[datetime]
     created_at: datetime
+    payment: Optional[PaymentResponse] = None
+    driver: Optional[DriverInfo] = None
+    rating: Optional[DriverRatingResponse] = None
+    pickup_otp: Optional[str] = None
+    delivery_otp: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -177,6 +216,26 @@ class UpdateDeliveryStatusRequest(BaseModel):
 
 class CancelDeliveryRequest(BaseModel):
     reason: str
+
+
+class RateDeliveryRequest(BaseModel):
+    rating: float
+    comment: Optional[str] = None
+
+    @field_validator("rating")
+    @classmethod
+    def validate_rating(cls, v):
+        if not (1 <= v <= 5):
+            raise ValueError("Rating must be between 1 and 5")
+        return v
+
+
+class ConfirmPickupRequest(BaseModel):
+    otp: str
+
+
+class CompleteDeliveryRequest(BaseModel):
+    otp: str
 
 
 class FareEstimateRequest(BaseModel):
@@ -219,21 +278,6 @@ class VerifyPaymentRequest(BaseModel):
     razorpay_payment_id: str
     razorpay_signature: str
     payment_method: Optional[str] = None
-
-
-class PaymentResponse(BaseModel):
-    id: UUID
-    delivery_id: UUID
-    amount: float
-    currency: str
-    status: PaymentStatus
-    razorpay_order_id: Optional[str]
-    razorpay_payment_id: Optional[str]
-    payment_method: Optional[str]
-    invoice_url: Optional[str]
-    created_at: datetime
-
-    model_config = {"from_attributes": True}
 
 
 class PaymentListResponse(BaseModel):

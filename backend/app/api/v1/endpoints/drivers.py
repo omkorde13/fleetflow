@@ -73,6 +73,10 @@ async def update_driver_status(
     if status == DriverStatus.ON_DELIVERY:
         raise HTTPException(status_code=400, detail="Status is managed automatically during deliveries")
 
+    # Can't go online/offline while a delivery is in progress
+    if driver.status in [DriverStatus.BUSY, DriverStatus.ON_DELIVERY]:
+        raise HTTPException(status_code=400, detail="Cannot change status while a delivery is in progress")
+
     driver.status = status
     return {"message": f"Status updated to {status.value}"}
 

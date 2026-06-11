@@ -133,6 +133,14 @@ class Driver(Base, UUIDMixin, TimestampMixin):
         Index("ix_driver_location", "current_lat", "current_lng"),
     )
 
+    @property
+    def full_name(self):
+        return self.user.full_name if self.user else None
+
+    @property
+    def phone(self):
+        return self.user.phone if self.user else None
+
 
 class Delivery(Base, UUIDMixin, TimestampMixin):
     __tablename__ = "deliveries"
@@ -182,11 +190,16 @@ class Delivery(Base, UUIDMixin, TimestampMixin):
     # Notes
     special_instructions = Column(Text, nullable=True)
 
+    # OTP verification
+    pickup_otp = Column(String(4), nullable=True)
+    delivery_otp = Column(String(4), nullable=True)
+
     # Relationships
     client = relationship("User", back_populates="deliveries", foreign_keys=[client_id])
     driver = relationship("Driver", back_populates="deliveries", foreign_keys=[driver_id])
     payment = relationship("Payment", back_populates="delivery", uselist=False)
     offer = relationship("Offer", back_populates="deliveries")
+    rating = relationship("DriverRating", back_populates="delivery", uselist=False)
 
     __table_args__ = (
         Index("ix_delivery_status", "status"),
@@ -331,6 +344,7 @@ class DriverRating(Base, UUIDMixin, TimestampMixin):
 
     # Relationships
     driver = relationship("Driver", back_populates="ratings")
+    delivery = relationship("Delivery", back_populates="rating")
 
     __table_args__ = (
         Index("ix_rating_driver", "driver_id"),
