@@ -17,6 +17,7 @@ Enterprise-grade, real-time delivery management platform built with FastAPI, Rea
 | **Google OAuth** | Social login with role-aware redirect |
 | **Role-based access** | CLIENT / DRIVER / ADMIN with separate dashboards and route guards |
 | **Celery jobs** | Notifications, invoice generation, daily reports, token cleanup |
+| **Email notifications** | Order confirmation, delivery updates, daily admin report, welcome & password reset emails via SMTP |
 | **Admin fleet monitor** | Live map of all active drivers via WebSocket |
 | **Coupon system** | Percentage, flat, free-delivery offers with usage limits |
 | **Alembic migrations** | Async SQLAlchemy with auto-migration on startup |
